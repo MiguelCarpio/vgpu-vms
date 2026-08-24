@@ -1,0 +1,41 @@
+---
+# Decide how many VMs to create and build the per-VM plan (one mdev/VM per VF).
+
+# vgpu_vms_num is "max" (the default) for the maximum the host supports, or a
+# positive integer for an explicit count.
+- name: Compute how many VMs to create
+  ansible.builtin.set_fact:
+    _vgpu_vms_target_count: >-
+      {{ (_vgpu_vms_free_vfs | length) if (vgpu_vms_num | string == "max")
+         else [vgpu_vms_num | int, _vgpu_vms_free_vfs | length] | min }}
+
+- name: Warn if requested more than available
+  ansible.builtin.debug:
+    msg: >-
+      Requested vgpu_vms_num={{ vgpu_vms_num }} but only
+      {{ _vgpu_vms_free_vfs | length }} free VF(s) available; creating
+      {{ _vgpu_vms_target_count }}.
+  when:
+    - vgpu_vms_num | string != "max"
+    - (vgpu_vms_num | int) > (_vgpu_vms_free_vfs | length)
+
+- name: Build the per-VM plan (one mdev/VM per free VF)
+  ansible.builtin.set_fact:
+    _vgpu_vms_plan: >-
+      {{ _vgpu_vms_plan | default([]) + [ item.1 | combine({
+           'index': item.0,
+           'name': vgpu_vms_prefix ~ '-' ~ item.0,
+           'uuid': (item.1.vf_bdf_path ~ '|' ~ item.0) | to_uuid,
+           'disk': vgpu_vms_image_dir ~ '/' ~ vgpu_vms_prefix ~ '-' ~ item.0 ~ '.qcow2' }) ] }}
+  loop: "{{ range(0, _vgpu_vms_target_count | int) | zip(_vgpu_vms_free_vfs) | list }}"
+  loop_control:
+    label: "{{ vgpu_vms_prefix }}-{{ item.0 }} -> gpu{{ item.1.gpu }}/virtfn{{ item.1.vf_index }}"
+
+- name: Show the plan
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.name }}: gpu{{ item.gpu }}/virtfn{{ item.vf_index }}
+      ({{ item.vf_bdf_path }}) uuid={{ item.uuid }}
+  loop: "{{ _vgpu_vms_plan }}"
+  loop_control:
+    label: "{{ item.name }}"

@@ -1,0 +1,28 @@
+---
+# Create the mdev (vGPU) on each selected VF.
+
+# Transient: start instantiates the mdev now. A host reboot clears it, so it
+# isn't persisted.
+- name: Start the mdev (vGPU) on each VF
+  ansible.builtin.command:
+    cmd: "mdevctl start -u {{ item.uuid }} -p {{ item.bdf }} -t {{ vgpu_vms_mdev_type }}"
+    creates: "/sys/bus/mdev/devices/{{ item.uuid }}"
+  loop: "{{ _vgpu_vms_plan }}"
+  loop_control:
+    label: "{{ item.name }} <- {{ item.uuid }}"
+
+- name: Verify the mdev exists
+  ansible.builtin.stat:
+    path: "/sys/bus/mdev/devices/{{ item.uuid }}"
+  register: _vgpu_vms_mdev_stat
+  loop: "{{ _vgpu_vms_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Assert every mdev was created
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: "mdev {{ item.item.uuid }} for {{ item.item.name }} was not created"
+  loop: "{{ _vgpu_vms_mdev_stat.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"

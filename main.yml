@@ -1,0 +1,48 @@
+---
+# Create MIG-backed vGPU VMs on an NVIDIA vGPU host, one vGPU (mdev) per VM:
+# discover every SR-IOV VF, create an mdev on each free one, clone a guest disk,
+# attach the mdev, and boot. By default it provisions the maximum the host
+# supports — one VM per free VF; pass -e vgpu_vms_num=N for a specific number.
+#
+# This only provisions the VMs (mdev + libvirt guest) — it does NOT install the
+# guest driver or run any validation.
+#
+# The base image is downloaded from vgpu_vms_image_url and seeded once with your
+# SSH public key (vgpu_vms_ssh_pubkey_file); each VM is a copy of it.
+#
+# This is a thin wrapper around the vgpu-vms role (this same directory). Run it
+# ON the vGPU host, as a user who can sudo. The role lives alongside this
+# playbook, so point ansible at it:
+#
+#   # provision the maximum (one 1-vGPU VM per free VF, across all GPUs):
+#   ANSIBLE_ROLES_PATH=.. ansible-playbook -i localhost, -c local \
+#     main.yml -e vgpu_vms_mdev_type=nvidia-xxx
+#
+#   # provision a specific number (round-robin across the GPUs):
+#   ANSIBLE_ROLES_PATH=.. ansible-playbook -i localhost, -c local \
+#     main.yml -e vgpu_vms_mdev_type=nvidia-xxx -e vgpu_vms_num=4
+#
+# After boot it grows the guest root FS and confirms the vGPU is visible (play 2).
+#
+# Prereqs: SR-IOV VFs enabled + MIG geometry already applied on the host, and
+# virt-install / qemu-img / guestfs-tools / mdevctl available.
+
+# Play 1 (host-side): discover VFs, create the mdevs, clone/boot the VMs, and
+# register each booted guest into the vgpu_vms_guests group.
+- name: Create MIG-backed vGPU VMs (one vGPU per VM)
+  hosts: all
+  become: true
+  gather_facts: false
+  roles:
+    - vgpu-vms
+
+# Play 2 (guest-side): run over the guests just registered, using native
+# modules to grow the root FS and confirm the vGPU is visible.
+- name: Configure the vGPU guests
+  hosts: vgpu_vms_guests
+  gather_facts: true
+  tasks:
+    - name: In-guest setup (grow FS, confirm vGPU)
+      ansible.builtin.include_role:
+        name: vgpu-vms
+        tasks_from: guest_setup.yaml

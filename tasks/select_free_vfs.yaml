@@ -1,0 +1,139 @@
+---
+# Pick the free VFs to use. The type metadata (existence, capacity) is per-GPU
+# and identical on every VF of a GPU, so we read it ONCE per GPU (from virtfn0)
+# then take only max_instance VFs per GPU.
+
+# One representative VF per GPU (virtfn0) to read the type metadata from.
+- name: Build a per-GPU probe path (virtfn0)
+  ansible.builtin.set_fact:
+    _vgpu_vms_gpu_probe: >-
+      {{ _vgpu_vms_gpu_probe | default([]) + [ item | combine({
+           'type_dir': '/sys/bus/pci/devices/' ~ item.pf ~ '/virtfn0/mdev_supported_types/'
+                       ~ vgpu_vms_mdev_type }) ] }}
+  loop: "{{ _vgpu_vms_gpus }}"
+  loop_control:
+    label: "gpu{{ item.gpu }}"
+
+# Precondition: the type dir only exists once the vGPU manager (nvidia-vgpud /
+# nvidia-vgpu-mgr) is running and has bound the VFs.
+- name: Check the mdev type dir exists on each GPU
+  ansible.builtin.stat:
+    path: "{{ item.type_dir }}"
+  register: _vgpu_vms_type_stat
+  loop: "{{ _vgpu_vms_gpu_probe }}"
+  loop_control:
+    label: "gpu{{ item.gpu }}"
+
+- name: Fail if no GPU exposes the mdev type
+  ansible.builtin.assert:
+    that: _vgpu_vms_type_stat.results | selectattr('stat.exists') | list | length > 0
+    fail_msg: >-
+      No GPU exposes mdev type {{ vgpu_vms_mdev_type }} under
+      mdev_supported_types/, so no vGPU can be created. Check that the
+      nvidia-vgpud and nvidia-vgpu-mgr services are active, and that
+      {{ vgpu_vms_mdev_type }} is a valid type for this host.
+
+# max_instance (in the type's `description`) is the number of mdevs a GPU can
+# host for this type. available_instances is only a per-VF "can create now" flag
+# (it reads 1 even when several instances are free), so max_instance is the cap.
+- name: Read the mdev type description on each GPU
+  ansible.builtin.slurp:
+    src: "{{ item.item.type_dir }}/description"
+  register: _vgpu_vms_desc
+  failed_when: false
+  when: item.stat.exists
+  loop: "{{ _vgpu_vms_type_stat.results }}"
+  loop_control:
+    label: "gpu{{ item.item.gpu }}"
+
+# Per-GPU take = min(max_instance, that GPU's VF count). Record it so we can
+# generate only the VFs we may use — not every VF on the host.
+- name: Compute the per-GPU VF take
+  ansible.builtin.set_fact:
+    _vgpu_vms_take: >-
+      {{ _vgpu_vms_take | default({}) | combine({
+           (_vgpu_vms_probe.gpu | string): [_vgpu_vms_gpu_cap | int, _vgpu_vms_vf_total | int] | min }) }}
+  vars:
+    _vgpu_vms_probe: "{{ item.item.item }}"
+    _vgpu_vms_gpu_cap: >-
+      {{ (item.content | default('') | b64decode)
+         | regex_search('max_instance=([0-9]+)', '\1')
+         | default(['1'], true) | first | int }}
+    _vgpu_vms_vf_total: >-
+      {{ _vgpu_vms_gpu_vf_count[_vgpu_vms_probe.gpu | string] | default(0) | int }}
+  when: item.skipped is not defined
+  loop: "{{ _vgpu_vms_desc.results }}"
+  loop_control:
+    label: "gpu{{ item.item.item.gpu }}"
+
+# Generate the shortlist: one row per (GPU, vf-index) up to the global max take,
+# keeping only rows within that GPU's take. This builds at most
+# max(take) * num_gpus rows — the VFs we may use, not all of them.
+- name: Shortlist up to max_instance VFs per GPU
+  ansible.builtin.set_fact:
+    _vgpu_vms_shortlist: >-
+      {{ _vgpu_vms_shortlist | default([]) + [ {
+           'gpu': _vgpu_vms_probe.gpu,
+           'pf': _vgpu_vms_probe.pf,
+           'vf_index': item.1,
+           'vf_bdf_path': '/sys/bus/pci/devices/' ~ _vgpu_vms_probe.pf ~ '/virtfn' ~ item.1 } ] }}
+  vars:
+    _vgpu_vms_probe: "{{ item.0.item.item }}"
+  when:
+    - item.0.skipped is not defined
+    - (item.1 | int) < (_vgpu_vms_take[_vgpu_vms_probe.gpu | string] | default(0) | int)
+  loop: >-
+    {{ _vgpu_vms_desc.results
+       | product(range(0, (_vgpu_vms_take.values() | map('int') | max))) | list }}
+  loop_control:
+    label: "gpu{{ item.0.item.item.gpu }}/virtfn{{ item.1 }}"
+
+# mdevctl addresses a VF by its real PCI BDF, so resolve each virtfn symlink to
+# the BDF (its target basename) and record it on the shortlist row.
+- name: Resolve each shortlisted VF's PCI BDF
+  ansible.builtin.stat:
+    path: "{{ item.vf_bdf_path }}"
+  register: _vgpu_vms_vf_link
+  loop: "{{ _vgpu_vms_shortlist | default([]) }}"
+  loop_control:
+    label: "gpu{{ item.gpu }}/virtfn{{ item.vf_index }}"
+
+- name: Attach the BDF to each shortlist row
+  ansible.builtin.set_fact:
+    _vgpu_vms_shortlist: >-
+      {{ _vgpu_vms_shortlist[:item.0]
+         + [ _vgpu_vms_shortlist[item.0] | combine({
+               'bdf': item.1.stat.lnk_target | default('') | basename }) ]
+         + _vgpu_vms_shortlist[item.0 + 1:] }}
+  loop: "{{ range(0, _vgpu_vms_shortlist | length) | zip(_vgpu_vms_vf_link.results) | list }}"
+  loop_control:
+    label: "gpu{{ _vgpu_vms_shortlist[item.0].gpu }}/virtfn{{ _vgpu_vms_shortlist[item.0].vf_index }}"
+
+# One host query for every existing mdev — the parent BDF is the outer key in the
+# dumpjson list. A shortlisted VF is free when its BDF isn't a parent already.
+- name: List existing mdevs on the host
+  ansible.builtin.command: mdevctl list --dumpjson
+  register: _vgpu_vms_mdevctl
+  changed_when: false
+
+- name: Collect the VF BDFs that already host an mdev
+  ansible.builtin.set_fact:
+    _vgpu_vms_used_bdfs: >-
+      {{ (_vgpu_vms_mdevctl.stdout | from_json | first | default({})).keys() | list }}
+
+- name: Select the free VFs (no existing mdev)
+  ansible.builtin.set_fact:
+    _vgpu_vms_free_vfs: >-
+      {{ _vgpu_vms_free_vfs | default([]) + [ item ] }}
+  when: item.bdf not in _vgpu_vms_used_bdfs
+  loop: "{{ _vgpu_vms_shortlist | default([]) }}"
+  loop_control:
+    label: "gpu{{ item.gpu }}/virtfn{{ item.vf_index }} ({{ item.bdf }})"
+
+- name: Fail if no free VFs are available
+  ansible.builtin.assert:
+    that: (_vgpu_vms_free_vfs | default([])) | length > 0
+    fail_msg: >-
+      No free VFs with a creatable {{ vgpu_vms_mdev_type }} instance (all
+      shortlisted VFs already have an mdev, or none were available). Is the MIG
+      geometry applied, and is {{ vgpu_vms_mdev_type }} the right type?

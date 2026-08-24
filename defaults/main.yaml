@@ -1,0 +1,55 @@
+---
+# Defaults for the vgpu-vms role: create MIG-backed vGPU VMs, one vGPU per VM.
+
+# [string|int] How many VMs to create. "max" = the maximum the host supports,
+# as many as there are free VFs (one VM per free VF, across all GPUs). A
+# positive integer = that many, round-robin across the GPUs.
+vgpu_vms_num: max
+
+# [string] mdev type to create on each VF (a type under a VF's
+# mdev_supported_types/, e.g. nvidia-xxx). REQUIRED.
+vgpu_vms_mdev_type: ""
+
+# [string] Name prefix for the VMs (VMs are <prefix>-0, <prefix>-1, ...).
+vgpu_vms_prefix: vgpu-vms
+# [int] Guest RAM in MB.
+vgpu_vms_memory_mb: 16384
+# [int] Guest vCPU count.
+vgpu_vms_vcpus: 8
+# [int] Guest disk size in GB (the cloned image is grown to this).
+vgpu_vms_disk_size: 60
+# [string] libvirt network to attach the guest NIC to.
+vgpu_vms_network: default
+
+# [string] URL of the base cloud image (the guest OS is auto-detected from it).
+vgpu_vms_image_url: "https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"
+# [string] User to create in the guest and SSH in as.
+vgpu_vms_user: cloud-user
+# [string] SSH public key injected into the base image.
+vgpu_vms_ssh_pubkey_file: "~/.ssh/id_rsa.pub"
+# [string] libvirt image pool directory (base + per-VM disks live here).
+vgpu_vms_image_dir: /var/lib/libvirt/images
+# [string] Path of the shared base image (downloaded + key-injected once).
+vgpu_vms_base_image: "{{ vgpu_vms_image_dir }}/vgpu-base.qcow2"
+
+# [string] Guest root block device and partition, grown after boot.
+vgpu_vms_root_dev: /dev/vda
+vgpu_vms_root_part: "1"
+
+# The guest NICs sit on the host's libvirt network (e.g. 192.168.122.0/24),
+# unreachable from a remote controller. Jump through the host to reach them:
+# set vgpu_vms_ssh_proxy_host to the host (user@addr or ssh alias) and a
+# ProxyCommand is built automatically. Leave empty when running on the host.
+vgpu_vms_ssh_proxy_host: ""
+# [string] Full -o ProxyCommand=... option, quotes included. Takes precedence
+# over vgpu_vms_ssh_proxy_host when set.
+vgpu_vms_ssh_proxy_command: >-
+  {{ '-o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no '
+     ~ vgpu_vms_ssh_proxy_host ~ '"' if vgpu_vms_ssh_proxy_host else '' }}
+
+# [string] SSH options for reaching each guest (in-guest tasks). The optional
+# ProxyCommand tunnels through the host so remote controllers can reach the
+# guest network.
+vgpu_vms_ssh_opts: >-
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+  {{ vgpu_vms_ssh_proxy_command }}

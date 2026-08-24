@@ -1,0 +1,35 @@
+---
+# Prepare the base image (download once, inject SSH key).
+
+- name: Read the SSH public key from the controller
+  ansible.builtin.slurp:
+    src: "{{ vgpu_vms_ssh_pubkey_file | expanduser }}"
+  register: _vgpu_vms_pubkey
+  delegate_to: localhost
+  become: false
+
+- name: Fail if the SSH public key is empty
+  ansible.builtin.assert:
+    that: (_vgpu_vms_pubkey.content | b64decode | trim) | length > 0
+    fail_msg: >-
+      SSH public key {{ vgpu_vms_ssh_pubkey_file }} is empty. Set
+      vgpu_vms_ssh_pubkey_file to your public key.
+
+- name: Download the base cloud image
+  ansible.builtin.get_url:
+    url: "{{ vgpu_vms_image_url }}"
+    dest: "{{ vgpu_vms_base_image }}"
+    mode: "0644"
+  register: _vgpu_vms_dl_base
+
+# Only inject the key when the image was (re)downloaded, so re-runs don't keep
+# re-customizing the same base.
+- name: Inject the SSH key into the base image
+  ansible.builtin.command:
+    cmd: >-
+      virt-customize -a {{ vgpu_vms_base_image }}
+      --run-command 'id {{ vgpu_vms_user }} >/dev/null 2>&1 || useradd -m -s /bin/bash {{ vgpu_vms_user }}; usermod -aG wheel {{ vgpu_vms_user }}'
+      --ssh-inject {{ vgpu_vms_user }}:string:'{{ _vgpu_vms_pubkey.content | b64decode | trim }}'
+      --run-command 'echo "{{ vgpu_vms_user }} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/{{ vgpu_vms_user }}'
+  when: _vgpu_vms_dl_base.changed
+  changed_when: true

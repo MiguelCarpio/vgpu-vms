@@ -1,0 +1,110 @@
+---
+# Clone a disk, define the VM with the mdev, boot.
+
+- name: Clone a per-VM qcow2 from the base image
+  ansible.builtin.command:
+    cmd: "cp --reflink=auto {{ vgpu_vms_base_image }} {{ item.disk }}"
+    creates: "{{ item.disk }}"
+  loop: "{{ _vgpu_vms_plan }}"
+  loop_control:
+    label: "{{ item.disk }}"
+
+- name: Grow each VM disk
+  ansible.builtin.command:
+    cmd: "qemu-img resize {{ item.disk }} {{ vgpu_vms_disk_size }}G"
+  register: _vgpu_vms_resize
+  changed_when: "'Image resized' in (_vgpu_vms_resize.stdout | default(''))"
+  loop: "{{ _vgpu_vms_plan }}"
+  loop_control:
+    label: "{{ item.disk }}"
+
+# Define the VM without the GPU first (--import boots the cloned disk). The mdev
+# is attached separately below via a hostdev XML — virt-install --hostdev doesn't
+# accept an mdev UUID.
+- name: virt-install each VM (no GPU yet)
+  ansible.builtin.command:
+    cmd: >-
+      virt-install
+      --name {{ item.name }}
+      --memory {{ vgpu_vms_memory_mb }}
+      --vcpus {{ vgpu_vms_vcpus }}
+      --disk {{ item.disk }},bus=virtio
+      --import --osinfo detect=on,require=off
+      --network network={{ vgpu_vms_network }}
+      --graphics none --noautoconsole --noreboot
+    creates: "/etc/libvirt/qemu/{{ item.name }}.xml"
+  loop: "{{ _vgpu_vms_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Write a hostdev XML for each mdev
+  ansible.builtin.copy:
+    dest: "/tmp/{{ item.name }}-hostdev.xml"
+    content: |
+      <hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci'>
+        <source>
+          <address uuid='{{ item.uuid }}'/>
+        </source>
+      </hostdev>
+    mode: "0644"
+  loop: "{{ _vgpu_vms_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Attach the mdev to each VM
+  ansible.builtin.command:
+    cmd: "virsh attach-device {{ item.name }} /tmp/{{ item.name }}-hostdev.xml --config"
+  register: _vgpu_vms_attach
+  changed_when: "'attached' in (_vgpu_vms_attach.stdout | default(''))"
+  failed_when:
+    - _vgpu_vms_attach.rc != 0
+    - "'already exists' not in (_vgpu_vms_attach.stderr | default(''))"
+  loop: "{{ _vgpu_vms_plan }}"
+  loop_control:
+    label: "{{ item.name }} <- {{ item.uuid }}"
+
+- name: Start each VM
+  ansible.builtin.command:
+    cmd: "virsh start {{ item.name }}"
+  register: _vgpu_vms_start
+  changed_when: "'started' in (_vgpu_vms_start.stdout | default(''))"
+  failed_when:
+    - _vgpu_vms_start.rc != 0
+    - "'already active' not in (_vgpu_vms_start.stderr | default(''))"
+  loop: "{{ _vgpu_vms_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Wait for each guest to get an IP
+  ansible.builtin.command: "virsh -q domifaddr {{ item.name }}"
+  register: _vgpu_vms_ipaddr
+  changed_when: false
+  retries: 20
+  delay: 6
+  until: >-
+    (_vgpu_vms_ipaddr.stdout | regex_search('([0-9]{1,3}\.){3}[0-9]{1,3}')) is not none
+  loop: "{{ _vgpu_vms_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Attach the discovered IP to each VM in the plan
+  ansible.builtin.set_fact:
+    _vgpu_vms_plan: >-
+      {{ _vgpu_vms_plan[:item.0]
+         + [ _vgpu_vms_plan[item.0] | combine({
+               'ip': item.1.stdout | regex_search('([0-9]{1,3}\.){3}[0-9]{1,3}') }) ]
+         + _vgpu_vms_plan[item.0 + 1:] }}
+  loop: "{{ range(0, _vgpu_vms_plan | length) | zip(_vgpu_vms_ipaddr.results) | list }}"
+  loop_control:
+    label: >-
+      {{ _vgpu_vms_plan[item.0].name }} ->
+      {{ item.1.stdout | regex_search('([0-9]{1,3}\.){3}[0-9]{1,3}') }}
+
+- name: Wait for SSH on each guest
+  ansible.builtin.wait_for:
+    host: "{{ item.ip }}"
+    port: 22
+    timeout: 180
+  loop: "{{ _vgpu_vms_plan }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.ip }})"

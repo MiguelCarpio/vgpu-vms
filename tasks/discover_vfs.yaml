@@ -1,0 +1,23 @@
+---
+# Count the VFs under each PF.
+
+- name: Count virtfn* symlinks under each PF
+  ansible.builtin.find:
+    paths: "/sys/bus/pci/devices/{{ item.pf }}"
+    patterns: "virtfn*"
+    file_type: link
+    use_regex: false
+  register: _vgpu_vms_vfs_per_pf
+  loop: "{{ _vgpu_vms_gpus }}"
+  loop_control:
+    label: "gpu{{ item.gpu }} ({{ item.pf }})"
+
+# Tag each GPU with its VF count, keyed by gpu index for the selection step.
+- name: Record the VF count per GPU
+  ansible.builtin.set_fact:
+    _vgpu_vms_gpu_vf_count: >-
+      {{ _vgpu_vms_gpu_vf_count | default({})
+         | combine({(item.item.gpu | string): (item.matched | int)}) }}
+  loop: "{{ _vgpu_vms_vfs_per_pf.results }}"
+  loop_control:
+    label: "gpu{{ item.item.gpu }} ({{ item.matched }} VFs)"

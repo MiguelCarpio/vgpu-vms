@@ -1,0 +1,43 @@
+---
+# In-guest: grow the root FS and confirm the vGPU is present.
+
+- name: Install growpart + pciutils
+  become: true
+  ansible.builtin.dnf:
+    name:
+      - cloud-utils-growpart
+      - pciutils
+    state: present
+
+# growpart exits 1 with NOCHANGE when the partition is already full-size, so
+# treat that as success and only report changed on an actual resize.
+- name: Grow the root partition
+  become: true
+  ansible.builtin.command:
+    cmd: "growpart {{ vgpu_vms_root_dev }} {{ vgpu_vms_root_part }}"
+  register: _vgpu_vms_growpart
+  changed_when: "'CHANGED' in (_vgpu_vms_growpart.stdout | default(''))"
+  failed_when:
+    - _vgpu_vms_growpart.rc != 0
+    - "'NOCHANGE' not in (_vgpu_vms_growpart.stdout | default(''))"
+
+- name: Grow the root filesystem
+  become: true
+  ansible.builtin.command:
+    cmd: "xfs_growfs /"
+  register: _vgpu_vms_growfs
+  changed_when: "'data blocks changed' in (_vgpu_vms_growfs.stdout | default(''))"
+
+- name: Confirm the vGPU device is present (lspci)
+  ansible.builtin.command: lspci -nn
+  register: _vgpu_vms_lspci
+  changed_when: false
+
+- name: Report the guest's NVIDIA device(s)
+  ansible.builtin.set_fact:
+    vgpu_vms_guest_nvidia: >-
+      {{ _vgpu_vms_lspci.stdout_lines | select('search', 'NVIDIA') | join('; ') }}
+
+- name: Show the guest's NVIDIA device(s)
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: {{ vgpu_vms_guest_nvidia | default('(none found)') }}"

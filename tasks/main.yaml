@@ -1,0 +1,31 @@
+---
+- name: Require an mdev type
+  ansible.builtin.assert:
+    that: (vgpu_vms_mdev_type | length) > 0
+    fail_msg: >-
+      Set vgpu_vms_mdev_type to a type listed under a VF's
+      mdev_supported_types/ (e.g. -e vgpu_vms_mdev_type=nvidia-xxx).
+
+- name: Discover GPUs and their PF BDFs
+  ansible.builtin.import_tasks: discover_gpus.yaml
+
+- name: Discover every VF under each PF
+  ansible.builtin.import_tasks: discover_vfs.yaml
+
+- name: Keep only VFs that are free
+  ansible.builtin.import_tasks: select_free_vfs.yaml
+
+- name: Decide how many VMs to create
+  ansible.builtin.import_tasks: build_vm_plan.yaml
+
+- name: Create the mdev (vGPU) on each selected VF
+  ansible.builtin.import_tasks: create_mdev.yaml
+
+- name: Prepare the base image (download once, inject SSH key)
+  ansible.builtin.import_tasks: prepare_base_image.yaml
+
+- name: Clone a disk, define the VM with the mdev, boot
+  ansible.builtin.import_tasks: create_vms.yaml
+
+- name: Register the booted guests into a runtime inventory group
+  ansible.builtin.import_tasks: register_guests.yaml

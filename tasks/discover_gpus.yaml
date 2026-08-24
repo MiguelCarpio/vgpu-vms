@@ -1,0 +1,28 @@
+---
+# Discover GPUs and their PF BDFs.
+
+- name: List GPU indexes
+  ansible.builtin.command: >-
+    nvidia-smi --query-gpu=index --format=csv,noheader,nounits
+  register: _vgpu_vms_gpu_idx
+  changed_when: false
+
+- name: Get PF PCI bus-id per GPU
+  ansible.builtin.command: >-
+    nvidia-smi -i {{ item }}
+    --query-gpu=pci.bus_id --format=csv,noheader,nounits
+  register: _vgpu_vms_pf_busid
+  changed_when: false
+  loop: "{{ _vgpu_vms_gpu_idx.stdout_lines | map('trim') | list }}"
+
+# nvidia-smi prints an 8-digit-domain BDF (00000000:42:00.0); the sysfs PF path
+# uses the last 12 chars lowercased (0000:42:00.0).
+- name: Build the GPU -> PF list
+  ansible.builtin.set_fact:
+    _vgpu_vms_gpus: >-
+      {{ _vgpu_vms_gpus | default([]) + [
+           {'gpu': item.item | int,
+            'pf': (item.stdout | trim)[-12:] | lower} ] }}
+  loop: "{{ _vgpu_vms_pf_busid.results }}"
+  loop_control:
+    label: "gpu{{ item.item }}"

@@ -1,0 +1,15 @@
+---
+# Register each booted guest into a runtime inventory group.
+
+- name: Add each guest to the vgpu_vms_guests group
+  ansible.builtin.add_host:
+    name: "{{ item.name }}"
+    groups: vgpu_vms_guests
+    ansible_host: "{{ item.ip }}"
+    ansible_user: "{{ vgpu_vms_user }}"
+    ansible_ssh_common_args: "{{ vgpu_vms_ssh_opts }}"
+    vgpu_vms_guest: "{{ item }}"
+  changed_when: false
+  loop: "{{ _vgpu_vms_plan }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.ip }})"
