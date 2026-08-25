@@ -2,20 +2,25 @@
 
 Create MIG-backed vGPU VMs on an NVIDIA vGPU host — one vGPU (mdev) per VM.
 
-The role discovers every SR-IOV VF across all GPUs, creates an mdev on each free
-one, clones a guest disk, attaches the mdev, and boots the VM. By default it
-provisions the maximum the host supports (one VM per free VF); pass a number for
-an explicit count. After boot it grows the guest root filesystem and confirms
-the vGPU is visible from inside the guest.
+The role discovers each GPU and how many VFs the chosen vGPU type
+(`vgpu_vms_mdev_type`) can back per GPU (its `max_instance` — the total capacity
+per GPU, i.e. the number of mdevs a GPU can host for that type), creates an mdev on
+each free one of those VFs, clones a guest disk, attaches the mdev, and boots the
+VM. By default it provisions the maximum the host supports for that type (one VM
+per backable free VF, across all GPUs); pass `vgpu_vms_num` for an explicit
+count. After boot it grows the guest root filesystem and confirms the vGPU is
+visible from inside the guest.
 
 This only provisions the VMs (mdev + libvirt guest) — it does **not** install the
 guest vGPU driver or run any validation.
 
 > **Note:** the role is designed for a **homogeneous MIG geometry** — every GPU
 > carved into identical MIG instances backing a single vGPU type
-> (`vgpu_vms_mdev_type`). For example, each GPU laid out as `47,47,47,47` (four
-> identical `1g` instances) backing `nvidia-1563` yields four VMs per GPU of that
-> type, and the role fills every instance.
+> (`vgpu_vms_mdev_type`). How many VMs a GPU yields depends on the type's
+> `max_instance`, not the geometry alone: on `47,47,47,47` (four identical `1g`
+> instances) a full-instance type like `nvidia-1563` (DC-1-24C) gives four VMs
+> per GPU, while a half-instance type like `nvidia-1560` (DC-1-12C) gives eight.
+> The role fills every free VF the type can back.
 
 ## Requirements
 
@@ -38,7 +43,10 @@ ANSIBLE_ROLES_PATH=.. ansible-playbook -i localhost, -c local \
   main.yml -e vgpu_vms_mdev_type=nvidia-xxx
 ```
 
-Provision a specific number (round-robin across the GPUs):
+Provision a specific number. By default this fills each GPU's free VFs before
+moving to the next, so a small count lands on the first GPU(s); pass
+`-e vgpu_vms_round_robin=true` to instead spread one VM per GPU (vf0 across all
+GPUs, then vf1). No effect when `vgpu_vms_num=max`:
 
 ```bash
 ANSIBLE_ROLES_PATH=.. ansible-playbook -i localhost, -c local \
@@ -49,8 +57,8 @@ ANSIBLE_ROLES_PATH=.. ansible-playbook -i localhost, -c local \
 `mdev_supported_types/` (e.g. `nvidia-xxx`). All other variables are overridable
 with `-e`; defaults are in [defaults/main.yaml](defaults/main.yaml).
 
-By default each run first tears down any existing `<prefix>-*` VMs and their
-mdevs, so it starts from a clean host (see [Teardown](#teardown)). Set
+By default each run first tears down **all** existing VMs and mdevs on the host,
+so it starts from a clean host (see [Teardown](#teardown)). Set
 `-e vgpu_vms_teardown=false` to skip it and provision alongside what's there.
 
 ### Running against a remote host

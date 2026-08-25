@@ -3,8 +3,13 @@
 
 # [string|int] How many VMs to create. "max" = the maximum the host supports,
 # as many as there are free VFs (one VM per free VF, across all GPUs). A
-# positive integer = that many, round-robin across the GPUs.
+# positive integer = that many, placed per vgpu_vms_round_robin below.
 vgpu_vms_num: max
+# [bool] How a positive vgpu_vms_num is spread across GPUs. false (default)
+# fills each GPU's free VFs before the next, so a small count lands on the first
+# GPU(s). true spreads one VM per GPU (vf0 across all GPUs, then vf1, ...).
+# No effect when vgpu_vms_num is "max" (every free VF is used regardless).
+vgpu_vms_round_robin: false
 
 # [string] mdev type to create on each VF (a type under a VF's
 # mdev_supported_types/, e.g. nvidia-xxx). REQUIRED.

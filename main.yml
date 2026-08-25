@@ -18,7 +18,8 @@
 #   ANSIBLE_ROLES_PATH=.. ansible-playbook -i localhost, -c local \
 #     main.yml -e vgpu_vms_mdev_type=nvidia-xxx
 #
-#   # provision a specific number (round-robin across the GPUs):
+#   # provision a specific number (fills each GPU's free VFs before the next;
+#   # add -e vgpu_vms_round_robin=true to spread one VM per GPU instead):
 #   ANSIBLE_ROLES_PATH=.. ansible-playbook -i localhost, -c local \
 #     main.yml -e vgpu_vms_mdev_type=nvidia-xxx -e vgpu_vms_num=4
 #

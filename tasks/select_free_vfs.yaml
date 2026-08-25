@@ -33,9 +33,8 @@
       nvidia-vgpud and nvidia-vgpu-mgr services are active, and that
       {{ vgpu_vms_mdev_type }} is a valid type for this host.
 
-# max_instance (in the type's `description`) is the number of mdevs a GPU can
-# host for this type. available_instances is only a per-VF "can create now" flag
-# (it reads 1 even when several instances are free), so max_instance is the cap.
+# max_instance (in the type's `description`) is the total capacity per GPU: the
+# number of mdevs a GPU can host for this type, and the cap on VFs to use.
 - name: Read the mdev type description on each GPU
   ansible.builtin.slurp:
     src: "{{ item.item.type_dir }}/description"
@@ -87,6 +86,16 @@
        | product(range(0, (_vgpu_vms_take.values() | map('int') | max))) | list }}
   loop_control:
     label: "gpu{{ item.0.item.item.gpu }}/virtfn{{ item.1 }}"
+
+# The shortlist is GPU-major (gpu0's VFs, then gpu1's, ...), so a small
+# vgpu_vms_num lands on the first GPU(s). Sorting by vf_index then gpu (sort is
+# stable) interleaves it — vf0 across all GPUs, then vf1 — so a small count
+# spreads one VM per GPU before doubling up.
+- name: Order the shortlist round-robin across GPUs
+  ansible.builtin.set_fact:
+    _vgpu_vms_shortlist: >-
+      {{ _vgpu_vms_shortlist | sort(attribute='gpu') | sort(attribute='vf_index') }}
+  when: vgpu_vms_round_robin | bool
 
 # mdevctl addresses a VF by its real PCI BDF, so resolve each virtfn symlink to
 # the BDF (its target basename) and record it on the shortlist row.
