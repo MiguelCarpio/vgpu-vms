@@ -30,7 +30,7 @@ vgpu_vms_ssh_pubkey_file: "~/.ssh/id_rsa.pub"
 # [string] libvirt image pool directory (base + per-VM disks live here).
 vgpu_vms_image_dir: /var/lib/libvirt/images
 # [string] Path of the shared base image (downloaded + key-injected once).
-vgpu_vms_base_image: "{{ vgpu_vms_image_dir }}/vgpu-base.qcow2"
+vgpu_vms_base_image: "{{ vgpu_vms_image_dir }}/{{ vgpu_vms_prefix }}-base.qcow2"
 
 # [string] Guest root block device and partition, grown after boot.
 vgpu_vms_root_dev: /dev/vda
