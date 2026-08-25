@@ -6,6 +6,10 @@
       Set vgpu_vms_mdev_type to a type listed under a VF's
       mdev_supported_types/ (e.g. -e vgpu_vms_mdev_type=nvidia-xxx).
 
+- name: Tear down existing VMs and mdevs first
+  ansible.builtin.import_tasks: teardown.yaml
+  when: vgpu_vms_teardown | bool
+
 - name: Discover GPUs and their PF BDFs
   ansible.builtin.import_tasks: discover_gpus.yaml
 

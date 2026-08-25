@@ -1,0 +1,59 @@
+---
+# Tear down every VM and mdev (destroy + undefine, removing disks; stop the
+# mdevs to free the MIG instances and VFs) and delete the shared base image.
+
+- name: List all libvirt domains
+  ansible.builtin.command: virsh -q list --all --name
+  register: _vgpu_vms_all_domains
+  changed_when: false
+
+- name: Select the domains to tear down
+  ansible.builtin.set_fact:
+    _vgpu_vms_teardown_domains: "{{ _vgpu_vms_all_domains.stdout_lines }}"
+
+- name: Destroy (power off) each VM
+  ansible.builtin.command:
+    cmd: "virsh destroy {{ item }}"
+  register: _vgpu_vms_destroy
+  changed_when: "'destroyed' in (_vgpu_vms_destroy.stdout | default(''))"
+  failed_when:
+    - _vgpu_vms_destroy.rc != 0
+    - "'not running' not in (_vgpu_vms_destroy.stderr | default(''))"
+  loop: "{{ _vgpu_vms_teardown_domains }}"
+
+- name: Undefine each VM and remove its disk
+  ansible.builtin.command:
+    cmd: "virsh undefine {{ item }} --remove-all-storage --nvram"
+  register: _vgpu_vms_undefine
+  changed_when: "'has been undefined' in (_vgpu_vms_undefine.stdout | default(''))"
+  loop: "{{ _vgpu_vms_teardown_domains }}"
+
+# The mdevs are transient (mdevctl start); stopping them frees the MIG instances
+# and VFs. The uuid is the inner key under each parent BDF in the dumpjson list.
+- name: List existing mdevs on the host
+  ansible.builtin.command: mdevctl list --dumpjson
+  register: _vgpu_vms_teardown_mdevctl
+  changed_when: false
+
+- name: Collect every mdev UUID
+  ansible.builtin.set_fact:
+    _vgpu_vms_teardown_uuids: >-
+      {{ (_vgpu_vms_teardown_mdevctl.stdout | from_json | first | default({})).values()
+         | map('first') | map('dict2items') | map('first')
+         | map(attribute='key') | list }}
+
+- name: Stop each mdev
+  ansible.builtin.command:
+    cmd: "mdevctl stop -u {{ item }}"
+  register: _vgpu_vms_mdev_stop
+  changed_when: _vgpu_vms_mdev_stop.rc == 0
+  failed_when:
+    - _vgpu_vms_mdev_stop.rc != 0
+    - "'not found' not in (_vgpu_vms_mdev_stop.stderr | default(''))"
+  loop: "{{ _vgpu_vms_teardown_uuids | default([]) }}"
+
+- name: Delete the shared base image
+  ansible.builtin.file:
+    path: "{{ vgpu_vms_base_image }}"
+    state: absent
+  when: vgpu_vms_teardown_base_image | bool

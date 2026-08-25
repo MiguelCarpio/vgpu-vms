@@ -49,6 +49,10 @@ ANSIBLE_ROLES_PATH=.. ansible-playbook -i localhost, -c local \
 `mdev_supported_types/` (e.g. `nvidia-xxx`). All other variables are overridable
 with `-e`; defaults are in [defaults/main.yaml](defaults/main.yaml).
 
+By default each run first tears down any existing `<prefix>-*` VMs and their
+mdevs, so it starts from a clean host (see [Teardown](#teardown)). Set
+`-e vgpu_vms_teardown=false` to skip it and provision alongside what's there.
+
 ### Running against a remote host
 
 The guest NICs sit on the host's libvirt network (e.g. `192.168.122.0/24`),
@@ -67,8 +71,20 @@ empty.
 
 ## Teardown
 
-The mdevs are **transient** (`mdevctl start`, not `define`) — a host reboot
-clears them. To remove one now:
+Every `main.yml` run tears down first by default: it destroys + undefines
+**every** VM on the host (removing its disk) and stops **all** mdevs (freeing the
+MIG instances and VFs), so it starts from a clean host. Set
+`-e vgpu_vms_teardown=false` to skip it.
+
+To also delete the shared base image during teardown:
+
+```bash
+ANSIBLE_ROLES_PATH=.. ansible-playbook -i localhost, -c local \
+  main.yml -e vgpu_vms_mdev_type=nvidia-xxx -e vgpu_vms_teardown_base_image=true
+```
+
+The mdevs are **transient** (`mdevctl start`, not `define`) — a host reboot also
+clears them. To remove one by hand:
 
 ```bash
 mdevctl stop -u <uuid>

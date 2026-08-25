@@ -53,3 +53,9 @@ vgpu_vms_ssh_proxy_command: >-
 vgpu_vms_ssh_opts: >-
   -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
   {{ vgpu_vms_ssh_proxy_command }}
+
+# [bool] Remove any existing <prefix>-* VMs and their mdevs before provisioning,
+# so the run starts from a clean host.
+vgpu_vms_teardown: true
+# [bool] Also delete the shared base image (vgpu_vms_base_image).
+vgpu_vms_teardown_base_image: false
